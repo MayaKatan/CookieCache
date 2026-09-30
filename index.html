@@ -67,7 +67,7 @@
   /* Collectible cookies */
   .cookie {
     position: absolute;
-    width: 6.0%;
+    width: 6.8%;
     transform: translate(-50%, -55%);
     filter: drop-shadow(0 4px 3px rgba(60, 40, 20, .35));
     pointer-events: none;
@@ -77,11 +77,47 @@
   /* Main character – 6×6 frame sprite sheet (each frame 192×192) */
   .player {
     position: absolute;
-    width: 14.4%;
+    width: 12.4%;
     aspect-ratio: 1 / 1;
     transform: translate(-50%, -100%);   /* anchor point = the feet */
     background: url("character.png") 0 0 / 600% 600% no-repeat;
     pointer-events: none;
+  }
+
+  /* The nerd – same sprite-sheet layout as the player */
+  .nerd {
+    position: absolute;
+    width: 12.4%;
+    aspect-ratio: 1 / 1;
+    transform: translate(-50%, -100%);
+    background: url("nerd.png") 0 0 / 600% 600% no-repeat;
+    pointer-events: none;
+  }
+  /* "?" / "!" bubble above the nerd's head */
+  .nerd .bubble {
+    position: absolute;
+    left: 50%;
+    top: -20%;
+    transform: translateX(-50%);
+    width: 26%;
+    aspect-ratio: 1 / 1;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    background: #fff;
+    border: 2px solid #3F4A54;
+    color: #2F6FB5;
+    font: 800 clamp(10px, 1.9vw, 18px) system-ui, sans-serif;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, .25);
+    animation: bob 1s ease-in-out infinite;
+  }
+  .nerd .bubble.alert {
+    color: #fff;
+    background: #D93A2B;
+    border-color: #8E1F15;
+  }
+  @keyframes bob {
+    50% { transform: translateX(-50%) translateY(-12%); }
   }
 
   /* Level-complete message */
@@ -103,8 +139,8 @@
   }
   .toast.show { opacity: 1; transform: translate(-50%, -50%) scale(1); }
 
-  /* Test button – generates a new board */
-  .shuffle {
+  /* Current level indicator */
+  .level-label {
     position: absolute;
     top: 2.5%;
     left: 2%;
@@ -114,10 +150,8 @@
     background: rgba(255, 255, 255, .85);
     color: #5E4B3C;
     font: 600 14px system-ui, sans-serif;
-    cursor: pointer;
     z-index: 9999;
   }
-  .shuffle:hover { background: #fff; }
 </style>
 </head>
 <body>
@@ -284,8 +318,8 @@
 
   <div class="toast" id="toast">כל הכבוד! 🎉</div>
 
-  <!-- Test button only: skips to the next level -->
-  <button class="shuffle" id="nextLevel">שלב 1 · לשלב הבא</button>
+  <!-- Current level (display only) -->
+  <div class="level-label" id="levelLabel">שלב 1</div>
 
   <button class="sound" aria-label="צליל">
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#5E4B3C" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -664,11 +698,112 @@ function update(dt) {
   drawPlayer();
 }
 
+/* ============================================================
+   The nerd: wanders the office with a "?" above his head.
+   When he bumps into the player he points at him and the "?"
+   turns into "!" – from then on it stays "!"
+   (next step: he walks off to tell the manager).
+   ============================================================ */
+const NERD_SPEED = 2.2;       // cells per second (at level 1)
+const POINT_TIME = 1.2;       // how long he points when he catches the player
+const CATCH_DIST = 0.8;       // how close (in cells) counts as bumping into the player
+const NERD_ANIM = { south: 0, north: 1, east: 2, west: 3, point: 4 };
+
+const nerd = {
+  el: null, bubble: null,
+  cell: null, target: null, t: 0, dir: null,
+  facing: "south", pointing: 0, alerted: false, animTime: 0,
+};
+
+function nerdFrame(anim, frame) {
+  nerd.el.style.backgroundPosition = `${frame * 20}% ${NERD_ANIM[anim] * 20}%`;
+}
+
+// Current position in cells (including the in-between progress)
+const posOf = o => o.target
+  ? { c: o.cell.c + (o.target.c - o.cell.c) * o.t, r: o.cell.r + (o.target.r - o.cell.r) * o.t }
+  : { c: o.cell.c, r: o.cell.r };
+
+// The nerd stays inside the room (no exits) and prefers to keep walking straight
+function nerdChooseDir() {
+  const all = Object.values(DIRS).filter(d => {
+    const nc = nerd.cell.c + d.dx;
+    return nc >= 0 && nc < COLS && canMove(nerd.cell, d);
+  });
+  const forward = all.filter(d => nerd.dir && d === nerd.dir);
+  const noBack = all.filter(d => !nerd.dir || !(d.dx === -nerd.dir.dx && d.dy === -nerd.dir.dy));
+  if (forward.length && Math.random() < 0.7) return forward[0];
+  const pool = noBack.length ? noBack : all;
+  return pool[rand(0, pool.length - 1)] || null;
+}
+
+function drawNerd() {
+  const { c, r } = posOf(nerd);
+  const feet = Y(r + 0.5) + CH * 0.32;
+  Object.assign(nerd.el.style, {
+    left: X(c + 0.5) + "%", top: feet + "%", zIndex: Math.round(feet * 10),
+  });
+}
+
+function updateNerd(dt) {
+  const n = nerd;
+  n.animTime += dt;
+
+  // Bumped into the player?
+  if (!n.alerted) {
+    const a = posOf(n), b = posOf(player);
+    if (Math.hypot(a.c - b.c, a.r - b.r) < CATCH_DIST) {
+      n.alerted = true;
+      n.pointing = POINT_TIME;
+      n.bubble.textContent = "!";
+      n.bubble.classList.add("alert");
+    }
+  }
+
+  if (n.pointing > 0) {
+    n.pointing -= dt;
+    nerdFrame("point", Math.min(2, Math.floor((1 - n.pointing / POINT_TIME) * 5)));
+    return;
+  }
+
+  if (!n.target) {
+    n.dir = nerdChooseDir();
+    if (n.dir) { n.target = { c: n.cell.c + n.dir.dx, r: n.cell.r + n.dir.dy }; n.t = 0; }
+  }
+  if (n.target) {
+    n.facing = n.dir.row;
+    n.t += dt * NERD_SPEED * difficulty(level).speed;
+    if (n.t >= 1) { n.cell = n.target; n.target = null; n.t = 0; }
+    nerdFrame(n.facing, Math.floor(n.animTime * 8) % 6);
+  }
+  drawNerd();
+}
+
+function spawnNerd() {
+  nerd.el = document.createElement("div");
+  nerd.el.className = "nerd";
+  nerd.bubble = document.createElement("div");
+  nerd.bubble.className = "bubble";
+  nerd.bubble.textContent = "?";
+  nerd.el.appendChild(nerd.bubble);
+  document.getElementById("objects").appendChild(nerd.el);
+  // Starts in the top half of the room, far from the player
+  Object.assign(nerd, {
+    cell: { c: rand(0, COLS - 1), r: rand(0, 2) }, target: null, t: 0, dir: null,
+    facing: "south", pointing: 0, alerted: false,
+  });
+  nerdFrame("south", 0);
+  drawNerd();
+}
+
 let last = performance.now();
 function loop(now) {
   const dt = Math.min(0.05, (now - last) / 1000);
   last = now;
-  if (board) update(dt);
+  if (board) {
+    update(dt);
+    if (player.dancing <= 0) updateNerd(dt);
+  }
   requestAnimationFrame(loop);
 }
 
@@ -713,7 +848,7 @@ officeEl.addEventListener("touchend", () => { touchStart = null; player.want = n
 /* ============================================================
    Level management
    ============================================================ */
-const btn = document.getElementById("nextLevel");
+const levelLabel = document.getElementById("levelLabel");
 
 function startLevel(n) {
   level = n;
@@ -733,12 +868,11 @@ function startLevel(n) {
   });
   setFrame("south", 0);
   drawPlayer();
+  spawnNerd();
 
-  btn.textContent = `שלב ${level} · לשלב הבא`;
-  btn.blur();   // so the arrow keys don't "press" the button
+  levelLabel.textContent = `שלב ${level}`;
 }
 
-btn.addEventListener("click", () => startLevel(level + 1));
 startLevel(1);
 requestAnimationFrame(loop);
 </script>
